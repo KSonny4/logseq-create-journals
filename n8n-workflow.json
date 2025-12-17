@@ -1,0 +1,55 @@
+{
+  "name": "Logseq Journal Creator",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0 1 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// Logseq Journal Creator - Production n8n Code Node\n// With Healthchecks.io Integration\n// ============================================\n\nconst fs = require('fs');\nconst path = require('path');\nconst https = require('https');\n\n// Configuration\nconst JOURNALS_DIR = '/logseq/journals';  // Mounted volume path\nconst HC_UUID = '379563e1-1f16-4845-80ed-344fc431826e';\nconst HC_BASE_URL = 'hc-ping.com';\n\n// ============ HEALTHCHECKS.IO LOGGING ============\nasync function hcLog(message) {\n  return new Promise((resolve) => {\n    const options = {\n      hostname: HC_BASE_URL,\n      port: 443,\n      path: `/${HC_UUID}/log`,\n      method: 'POST',\n      headers: {\n        'Content-Type': 'text/plain',\n        'Content-Length': Buffer.byteLength(message)\n      }\n    };\n    const req = https.request(options, (res) => {\n      resolve(res.statusCode);\n    });\n    req.on('error', () => resolve(0));\n    req.write(message);\n    req.end();\n  });\n}\n\nasync function hcPingSuccess(message) {\n  return new Promise((resolve) => {\n    const body = message || '';\n    const options = {\n      hostname: HC_BASE_URL,\n      port: 443,\n      path: `/${HC_UUID}`,\n      method: 'POST',\n      headers: {\n        'Content-Type': 'text/plain',\n        'Content-Length': Buffer.byteLength(body)\n      }\n    };\n    const req = https.request(options, (res) => {\n      resolve(res.statusCode);\n    });\n    req.on('error', () => resolve(0));\n    req.write(body);\n    req.end();\n  });\n}\n\nasync function hcPingFail(message) {\n  return new Promise((resolve) => {\n    const body = message || '';\n    const options = {\n      hostname: HC_BASE_URL,\n      port: 443,\n      path: `/${HC_UUID}/fail`,\n      method: 'POST',\n      headers: {\n        'Content-Type': 'text/plain',\n        'Content-Length': Buffer.byteLength(body)\n      }\n    };\n    const req = https.request(options, (res) => {\n      resolve(res.statusCode);\n    });\n    req.on('error', () => resolve(0));\n    req.write(body);\n    req.end();\n  });\n}\n\n// ============ LOCAL LOGGING ============\nfunction log(level, message, data = {}) {\n  const timestamp = new Date().toISOString();\n  console.log(JSON.stringify({ timestamp, level, message, ...data }));\n}\n\n// ============ DATE FORMATTING ============\nfunction formatDate(date) {\n  const year = date.getFullYear();\n  const month = String(date.getMonth() + 1).padStart(2, '0');\n  const day = String(date.getDate()).padStart(2, '0');\n  return `${year}_${month}_${day}`;\n}\n\n// ============ DATE PARSING ============\nfunction parseDateFromFilename(filename) {\n  const match = filename.match(/^(\\d{4})_(\\d{2})_(\\d{2})\\.md$/);\n  if (!match) {\n    return null;\n  }\n  \n  const year = parseInt(match[1], 10);\n  const month = parseInt(match[2], 10) - 1; // Month is 0-indexed\n  const day = parseInt(match[3], 10);\n  \n  return new Date(year, month, day);\n}\n\n// ============ SCAN JOURNALS ============\nfunction scanJournals(journalsDir) {\n  if (!fs.existsSync(journalsDir)) {\n    return {\n      lastDate: null,\n      lastFileName: null,\n      totalJournals: 0,\n    };\n  }\n\n  const files = fs.readdirSync(journalsDir);\n  const journalFiles = files.filter(file => file.match(/^\\d{4}_\\d{2}_\\d{2}\\.md$/));\n  \n  if (journalFiles.length === 0) {\n    return {\n      lastDate: null,\n      lastFileName: null,\n      totalJournals: 0,\n    };\n  }\n\n  // Parse dates and find the most recent one\n  let lastDate = null;\n  let lastFileName = null;\n\n  for (const file of journalFiles) {\n    const date = parseDateFromFilename(file);\n    if (date && (!lastDate || date > lastDate)) {\n      lastDate = date;\n      lastFileName = file;\n    }\n  }\n\n  return {\n    lastDate,\n    lastFileName,\n    totalJournals: journalFiles.length,\n  };\n}\n\n// ============ CREATE JOURNAL FILES ============\nfunction createJournalFiles(journalsDir, startDate, endDate, templateContent) {\n  const filesCreated = [];\n  const currentDate = new Date(startDate);\n\n  while (currentDate <= endDate) {\n    const fileName = `${formatDate(currentDate)}.md`;\n    const filePath = path.join(journalsDir, fileName);\n\n    // Skip if file already exists\n    if (!fs.existsSync(filePath)) {\n      fs.writeFileSync(filePath, templateContent, 'utf8');\n      filesCreated.push(fileName);\n      log('info', 'Created journal file', { fileName });\n    }\n\n    // Move to next day\n    currentDate.setDate(currentDate.getDate() + 1);\n  }\n\n  return {\n    success: true,\n    filesCreated: filesCreated.length,\n    message: filesCreated.length > 0\n      ? `Created ${filesCreated.length} journal file(s).`\n      : 'All journal files already exist.',\n  };\n}\n\n// ============ MAIN EXECUTION ============\ntry {\n  log('info', 'Starting journal creator', { journalsDir: JOURNALS_DIR });\n  await hcLog(`Starting journal creator - scanning directory: ${JOURNALS_DIR}`);\n\n  // Validate directory exists\n  if (!fs.existsSync(JOURNALS_DIR)) {\n    const errMsg = `Journals directory not found: ${JOURNALS_DIR}`;\n    await hcLog(`ERROR: ${errMsg}`);\n    await hcPingFail(errMsg);\n    throw new Error(errMsg);\n  }\n\n  // Scan for existing journals\n  const scanResult = scanJournals(JOURNALS_DIR);\n  \n  await hcLog(`Found ${scanResult.totalJournals} existing journal file(s)`);\n  log('info', 'Scan complete', { totalJournals: scanResult.totalJournals });\n\n  if (!scanResult.lastDate || !scanResult.lastFileName) {\n    const errMsg = 'No existing journal files found. Cannot determine template.';\n    await hcLog(`ERROR: ${errMsg}`);\n    await hcPingFail(errMsg);\n    throw new Error(errMsg);\n  }\n\n  const lastDateStr = scanResult.lastDate.toISOString().split('T')[0];\n  await hcLog(`Last journal: ${scanResult.lastFileName} (${lastDateStr})`);\n  log('info', 'Last journal found', { fileName: scanResult.lastFileName, date: lastDateStr });\n\n  // Read template from last journal file\n  const templatePath = path.join(JOURNALS_DIR, scanResult.lastFileName);\n  const templateContent = fs.readFileSync(templatePath, 'utf8');\n  await hcLog(`Reading template from: ${scanResult.lastFileName}`);\n  log('info', 'Template loaded', { fileName: scanResult.lastFileName });\n\n  // Calculate date range: from (lastDate + 1) to (lastDate + 1 month)\n  const startDate = new Date(scanResult.lastDate);\n  startDate.setDate(startDate.getDate() + 1);\n\n  const endDate = new Date(scanResult.lastDate);\n  endDate.setMonth(endDate.getMonth() + 1);\n\n  const startDateStr = startDate.toISOString().split('T')[0];\n  const endDateStr = endDate.toISOString().split('T')[0];\n  await hcLog(`Creating journals from ${startDateStr} to ${endDateStr}`);\n  log('info', 'Date range calculated', { startDate: startDateStr, endDate: endDateStr });\n\n  // Create missing journal files\n  const result = createJournalFiles(JOURNALS_DIR, startDate, endDate, templateContent);\n  \n  await hcLog(`Created ${result.filesCreated} journal file(s)`);\n  log('info', 'Journal creation complete', { filesCreated: result.filesCreated });\n\n  // Success - ping Healthchecks.io\n  const successMsg = result.filesCreated > 0\n    ? `Successfully created ${result.filesCreated} journal file(s)`\n    : 'All journal files already exist';\n  await hcPingSuccess(successMsg);\n\n  // Success response\n  return [{\n    json: {\n      success: true,\n      filesCreated: result.filesCreated,\n      message: successMsg,\n      lastJournal: scanResult.lastFileName,\n      dateRange: {\n        start: startDateStr,\n        end: endDateStr\n      },\n      timestamp: new Date().toISOString()\n    }\n  }];\n\n} catch (error) {\n  // Error handling with full context\n  log('error', 'Journal creator failed', { error: error.message, stack: error.stack });\n  \n  // Ping failure to Healthchecks.io\n  await hcPingFail(`Error: ${error.message}`);\n  \n  return [{\n    json: {\n      success: false,\n      error: error.message,\n      timestamp: new Date().toISOString()\n    }\n  }];\n}"
+      },
+      "id": "code-node",
+      "name": "Logseq Journal Creator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Logseq Journal Creator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2024-12-17T00:00:00.000Z",
+  "versionId": "1"
+}
