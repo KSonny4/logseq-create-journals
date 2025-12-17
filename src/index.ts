@@ -18,7 +18,7 @@ function extractUuidFromUrl(url: string): string | null {
 async function hcLog(url: string, message: string): Promise<void> {
   const uuid = extractUuidFromUrl(url);
   if (!uuid) {
-    console.warn('Invalid healthcheck URL format');
+    console.warn(`Invalid healthcheck URL format: ${url}. Cannot send log to healthchecks.io.`);
     return;
   }
 
@@ -45,7 +45,7 @@ async function hcLog(url: string, message: string): Promise<void> {
 async function pingHealthcheckSuccess(url: string, message?: string): Promise<void> {
   const uuid = extractUuidFromUrl(url);
   if (!uuid) {
-    console.warn('Invalid healthcheck URL format');
+    console.warn(`Invalid healthcheck URL format: ${url}. Cannot ping healthchecks.io.`);
     return;
   }
 
@@ -74,7 +74,7 @@ async function pingHealthcheckSuccess(url: string, message?: string): Promise<vo
 async function pingHealthcheckFail(url: string, message?: string): Promise<void> {
   const uuid = extractUuidFromUrl(url);
   if (!uuid) {
-    console.warn('Invalid healthcheck URL format');
+    console.warn(`Invalid healthcheck URL format: ${url}. Cannot ping healthchecks.io.`);
     return;
   }
 
